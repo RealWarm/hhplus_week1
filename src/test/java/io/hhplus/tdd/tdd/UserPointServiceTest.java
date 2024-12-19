@@ -27,12 +27,89 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 * 3) 종단관심사인 구매내역 정상작동 확인
 *
 * 이렇게 3가지를 위해서 테스트 케이스를 작성했습니다.
+*
+*
+* ReentrantLock를 이용하여 동시성에 대한 처리를 했고
+* ExecutorService를 이용하여 동시 접근의 상황을 구현해 봤습니다.
+*
 * */
 
 @SpringBootTest
 public class UserPointServiceTest {
+    private final int  THREAD_COUNT     = 100;   // 사용할 스레드 개수
+    private final long INITIAL_AMOUNT   = 1000L; // 초기 충전 금액
+    private final long CHARGE_AMOUNT    = 500L;  // 각 스레드에서 충전할 금액
+
     @Autowired
     private UserPointService userPointService;
+
+
+    @Test
+    @DisplayName("동일한 ID에 100개의 충전 요청이 동시에 들어온다.")
+    public void concurrentChargeUserPoint() throws InterruptedException {
+        long userId = 11L;
+        // given
+        ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
+        CountDownLatch latch = new CountDownLatch(THREAD_COUNT);
+        // 테스트를 위해 초기 포인트 설정
+        userPointService.chargeUserPoint(userId, INITIAL_AMOUNT);
+
+        // when
+        // 스레드 생성 및 실행
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            executor.submit(() -> {
+                try {
+                    userPointService.chargeUserPoint(userId, CHARGE_AMOUNT);
+                } finally {
+                    latch.countDown(); // 작업 완료 시 카운트 감소
+                }
+            });
+        }
+
+        // 모든 스레드 작업이 완료될 때까지 대기
+        latch.await();
+        executor.shutdown(); // 스레드 풀 종료
+
+        // then
+        // 최종 포인트 확인
+        long expectedTotal = INITIAL_AMOUNT + (CHARGE_AMOUNT * THREAD_COUNT);
+        UserPoint userPoint = userPointService.getUserPoint(userId);
+        assertThat(userPoint.point()).isEqualTo(expectedTotal); // 최종 포인트는 각 스레드의 충전 금액 합산
+    }
+
+
+    @Test
+    @DisplayName("동일한 ID에 100개의 사용 요청이 동시에 들어온다.")
+    public void concurrentDeductPoint() throws InterruptedException {
+        long userId = 12L;
+        // given
+        userPointService.chargeUserPoint(userId, INITIAL_AMOUNT);
+        CountDownLatch latch = new CountDownLatch(THREAD_COUNT);
+        ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
+
+        // when
+        // 스레드 생성 및 실행
+        for (int i = 0; i < THREAD_COUNT; i++) {
+            executor.submit(() -> {
+                try {
+                    userPointService.deductPoint(userId, CHARGE_AMOUNT);
+                } finally {
+                    latch.countDown(); // 작업 완료 시 카운트 감소
+                }
+            });
+        }
+
+        // 모든 스레드 작업이 완료될 때까지 대기
+        latch.await();
+        executor.shutdown(); // 스레드 풀 종료
+
+        // then
+        // 최종 포인트 확인
+        long expectedTotal = INITIAL_AMOUNT - (CHARGE_AMOUNT * THREAD_COUNT) <= 0
+                ? 0 : INITIAL_AMOUNT - (CHARGE_AMOUNT * THREAD_COUNT);
+        UserPoint userPoint = userPointService.getUserPoint(userId);
+        assertThat(userPoint.point()).isEqualTo(expectedTotal); // 최종 포인트는 차감된 금액
+    }
 
 
     @Test
